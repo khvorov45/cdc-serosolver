@@ -44,15 +44,7 @@ antigenic_map_predicted_serosolver <-
 all(antigenic_map_predicted_serosolver$x_coord == antigenic_map_predicted$x_coord)
 all(antigenic_map_predicted_serosolver$y_coord == antigenic_map_predicted$y_coord)
 
-# NOTE(sen) This is just picking the closest real strain
-antigenic_map_closest <- tibble(
-  strain_quarter = strain_quarters_desired,
-  map_dfr(strain_quarter, function(desired_quarter) {
-    antigenic_map %>%
-      slice(which.min(antigenic_map$strain_quarter - desired_quarter)) %>%
-      select(x_coord, y_coord)
-  })
-)
+write_csv(antigenic_map_predicted_serosolver, "sim/sim-agmap.csv")
 
 antigenic_map_coords_plot <- antigenic_map %>%
   ggplot(aes(x_coord, y_coord)) +
@@ -86,23 +78,52 @@ ggdark::ggsave_dark(
   width = 10, height = 15, units = "cm"
 )
 
+# SECTION Simulation
+
+n_individuals <- 50
+
+sim_data_ages <- tibble(
+  pid = 1:n_individuals,
+  dob = runif(
+    n_individuals,
+    lubridate::ymd("1960-01-01"),
+    lubridate::ymd("1999-12-31")
+  ) %>%
+    lubridate::as_date(),
+  dob_quarter = lubridate::year(dob) * 4 + ceiling(lubridate::month(dob) / 3)
+)
+
+infection_histories <- antigenic_map_predicted %>%
+  mutate(infection_prob = runif(nrow(antigenic_map_predicted), 0, 1)) %>%
+  select(strain_quarter, infection_prob) %>%
+  slice(rep(1:n(), each = n_individuals)) %>%
+  bind_cols(
+    sim_data_ages %>%
+      select(pid, dob_quarter) %>%
+      slice(rep(1:n(), each = nrow(antigenic_map_predicted)))
+  ) %>%
+  mutate(
+    infection_prob = if_else(dob_quarter <= strain_quarter, infection_prob, 0),
+    infected = rbinom(n(), 1, infection_prob)
+  )
+
+# NOTE(sen) Nobody should be infected with strains that circulated before their
+# birth
+infection_histories %>%
+  filter(dob_quarter > strain_quarter) %>%
+  pull(infected) %>%
+  `==`(0) %>%
+  all()
+
 
 data(example_par_tab, package = "serosolver")
 
 
-example_antigenic_map <- serosolver::generate_antigenic_map_flexible(
-  antigenic_coords,
-  buckets = 4, spar = 0.3,
-  year_min = 2014, year_max = 2015
-)
 
-write_csv(example_antigenic_map, "sim/sim-agmap.csv")
-
-strain_isolation_times <- unique(example_antigenic_map$inf_times)
 
 # NOTE(sen) strain isolation times are indices of Q1 of virus years, assume that
 # these sampled viruses were sampled in Q2 of each year.
-sampled_viruses <- strain_isolation_times[[2]]
+sampled_viruses <- 1999 * 4
 # seq(min(strain_isolation_times) + 1, max(strain_isolation_times), by = 4)
 
 serum_samples_per_year <- 2
@@ -111,7 +132,6 @@ resolution_quarterly <- 4 # NOTE(sen) 4 per year, i.e. quarterly resolution_quar
 # NOTE(sen) One year's worth of sampling times
 sampling_times <- strain_isolation_times[c(1, 3)] # seq(2014 * resolution_quarterly, 2015 * resolution_quarterly - 1, by = 1)
 
-attack_rates <- runif(length(strain_isolation_times), 1, 1)
 
 length(attack_rates)
 length(strain_isolation_times)
