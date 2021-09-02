@@ -44,6 +44,9 @@ antigenic_map_predicted_serosolver <-
 all(antigenic_map_predicted_serosolver$x_coord == antigenic_map_predicted$x_coord)
 all(antigenic_map_predicted_serosolver$y_coord == antigenic_map_predicted$y_coord)
 
+# NOTE(sen) The manipulation above happens to work well enough for _this_ map
+# but it's not a robust way of predicting titres for _any_ map.
+
 write_csv(antigenic_map_predicted_serosolver, "sim/sim-agmap.csv")
 
 antigenic_map_coords_plot <- antigenic_map %>%
