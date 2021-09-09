@@ -1,6 +1,5 @@
 {
   "cSpell.words": [
-    "Rcpp",
     "agmap",
     "burnin",
     "fonville",
@@ -8,8 +7,11 @@
     "iwalk",
     "nsamps",
     "plyr",
+    "pmax",
+    "pmin",
     "popt",
     "propn",
+    "Rcpp",
     "serosolver",
     "serosolver's"
   ]

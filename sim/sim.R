@@ -21,7 +21,9 @@ antigenic_map <- read_csv(
 
 # NOTE(sen) The map does not have all the desired quaters to they need to be
 # predicted somehow
-strain_quarters_desired <- seq(1968 * 4, 2016 * 4 - 1)
+strain_year_min <- 2000
+strain_year_max <- 2002
+strain_quarters_desired <- seq(strain_year_min * 4, strain_year_max * 4 - 1)
 
 # NOTE(sen) This dodgy manipulation is from
 # serosolver::generate_antigenic_map_flexible
@@ -39,7 +41,9 @@ antigenic_map_predicted_serosolver <-
   serosolver::generate_antigenic_map_flexible(
     antigenic_map %>%
       select(Strain = strain_year, X = x_coord, Y = y_coord),
-    buckets = 4
+    buckets = 4,
+    year_min = strain_year_min,
+    year_max = strain_year_max
   )
 all(antigenic_map_predicted_serosolver$x_coord == antigenic_map_predicted$x_coord)
 all(antigenic_map_predicted_serosolver$y_coord == antigenic_map_predicted$y_coord)
@@ -47,7 +51,7 @@ all(antigenic_map_predicted_serosolver$y_coord == antigenic_map_predicted$y_coor
 # NOTE(sen) The manipulation above happens to work well enough for _this_ map
 # but it's not a robust way of predicting titres for _any_ map.
 
-write_csv(antigenic_map_predicted_serosolver, "sim/sim-agmap.csv")
+write_csv(antigenic_map_predicted, "sim/sim-agmap.csv")
 
 antigenic_map_coords_plot <- antigenic_map %>%
   ggplot(aes(x_coord, y_coord)) +
@@ -103,7 +107,7 @@ infection_histories <- antigenic_map_predicted %>%
   bind_cols(
     sim_data_ages %>%
       select(pid, dob_quarter) %>%
-      slice(rep(1:n(), each = nrow(antigenic_map_predicted)))
+      slice(rep(1:n(), times = nrow(antigenic_map_predicted)))
   ) %>%
   mutate(
     infection_prob = if_else(dob_quarter <= strain_quarter, infection_prob, 0),
@@ -118,6 +122,163 @@ infection_histories %>%
   `==`(0) %>%
   all()
 
+# NOTE(sen) Serosolver's `melt_antigenic_coords` actually just finds the
+# distance matrix but in its own very special way
+
+antigenic_coords_matrix <- antigenic_map_predicted %>%
+  select(x_coord, y_coord) %>%
+  as.matrix()
+rownames(antigenic_coords_matrix) <- antigenic_map_predicted$strain_quarter
+
+antigenic_distances <- dist(antigenic_coords_matrix) %>% as.matrix()
+
+# NOTE(sen) Serosolver thought that a c++ function was warranted for this
+# amazingly complex job
+calc_boosting <- function(distances, parameter) {
+  pmax(1 - distances * parameter, 0)
+}
+
+parameter_short_term_boosting <- 0.1 # NOTE(sen) sigma1
+parameter_short_term_boosting <- 0.03 # NOTE(sen) sigma2
+
+short_term_boosting <-
+  calc_boosting(antigenic_distances, parameter_short_term_boosting)
+long_term_boosting <-
+  calc_boosting(antigenic_distances, parameter_long_term_boosting)
+
+# NOTE(sen) So the "boosting" is this as follows. If the antigenic distance is
+# more than 1 / paramenter then it's 0. Otherwise it's 1 minus distance times
+# the appropriate parameter So when the parameter is 0 then the boosting is
+# actually 1 for every virus. If the parameter is large (infinite) then the
+# boosting is 0 for every virus
+
+param_titre_contribution_short <- 2.7 # NOTE(sen) mu_short
+param_titre_contribution_long <- 1.8 # NOTE(sen) mu
+
+# NOTE(sen) Each column represents the titre contributions for that strain from
+# all the other strains (including itself) if the individual was infected with
+# all the strains and the sample was taken after all the infections and waning
+# isn't a factor
+titre_contribution_short <- short_term_boosting * param_titre_contribution_short
+titre_contribution_long <- long_term_boosting * param_titre_contribution_long
+
+sampling_quarters <- strain_quarters_desired[strain_quarters_desired %% 2 == 0]
+
+parameter_wane_per_quarter <- 0.2 # NOTE(sen) wane
+parameter_seniority <- 0.05 # NOTE(sen) tau
+
+sim_titres <- map_dfr(sampling_quarters, function(sampling_quarter) {
+  infection_histories_before_sampling <- infection_histories %>%
+    mutate(infected = if_else(strain_quarter <= sampling_quarter, infected, 0L))
+  infection_histories_before_sampling %>%
+    group_by(pid) %>%
+    group_map(function(data, key) {
+      strain_quarters <- data$strain_quarter
+      infected <- data$infected
+
+      infected_matrix <- as.matrix(infected)
+      rownames(infected_matrix) <- strain_quarters
+
+      horizontal_matrix_with_ones <-
+        matrix(rep(1, length(strain_quarters)), nrow = 1)
+      colnames(horizontal_matrix_with_ones) <- strain_quarters
+
+      # NOTE(sen) Remove the contribution of the strains that the individual
+      # wasn't infected by
+      titre_contribution_mask <- infected_matrix %*% horizontal_matrix_with_ones
+
+      titre_contribution_long_masked <-
+        titre_contribution_long * titre_contribution_mask
+      titre_contribution_short_masked <-
+        titre_contribution_short * titre_contribution_mask
+
+      sampling_quarters_from_strain <-
+        sampling_quarter - matrix(strain_quarters) %*% horizontal_matrix_with_ones
+
+      wane_amount <-
+        pmin(pmax(1 - sampling_quarters_from_strain * parameter_wane_per_quarter, 0), 1)
+
+      titre_contribution_short_with_waning <-
+        titre_contribution_short_masked * wane_amount
+
+      titre_contribution_total_masked <-
+        titre_contribution_long_masked + titre_contribution_short_masked
+
+      seniority <- max(1 - parameter_seniority * (sum(infected) - 1), 0)
+
+      titre_contribution_total_per_strain <-
+        colSums(titre_contribution_total_masked) * seniority
+
+      tibble(
+        pid = key$pid,
+        sampling_quarter,
+        strain_quarter = names(titre_contribution_total_per_strain),
+        titre_unit = titre_contribution_total_per_strain
+      )
+    })
+})
+
+
+sim_titres
+
+
+infection_histories %>%
+  filter(pid == 34)
+
+sim_titres %>%
+  filter(pid == 34, sampling_quarter == 8000)
+
+matrix(-5:4, ncol = 2) %>% pmax(0)
+
+sim_titres
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+temp_one_infection_history <- infection_histories %>%
+  filter(pid == first(pid))
+
+temp_one_infection_history_matrix <- temp_one_infection_history %>%
+  pull(infected) %>%
+  as.matrix()
+
+rownames(temp_one_infection_history_matrix) <-
+  temp_one_infection_history$strain_quarter
+
+temp_one_infection_history_matrix %*%
+  matrix(rep(1, nrow(temp_one_infection_history_matrix)), nrow = 1)
+
+param_mu <- 1.8
+param_mu_short <- 2.7
+short_term_boosting %>%
+  as.matrix() %>%
+  `*`(param_mu_short) %>%
+  colSums()
+
+
+param_mu
+
+
+
+
+
+c(temp)
+str(antigenic_distances)
+
+c(antigenic_distances)
+c(temp)
+antigenic_distances[lower.tri(antigenic_distances, diag = TRUE)]
 
 data(example_par_tab, package = "serosolver")
 
