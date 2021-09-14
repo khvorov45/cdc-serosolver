@@ -138,13 +138,13 @@ calc_boosting <- function(distances, parameter) {
   pmax(1 - distances * parameter, 0)
 }
 
-parameter_short_term_boosting <- 0.1 # NOTE(sen) sigma1
+parameter_long_term_boosting <- 0.1 # NOTE(sen) sigma1
 parameter_short_term_boosting <- 0.03 # NOTE(sen) sigma2
 
-short_term_boosting <-
-  calc_boosting(antigenic_distances, parameter_short_term_boosting)
 long_term_boosting <-
   calc_boosting(antigenic_distances, parameter_long_term_boosting)
+short_term_boosting <-
+  calc_boosting(antigenic_distances, parameter_short_term_boosting)
 
 # NOTE(sen) So the "boosting" is this as follows. If the antigenic distance is
 # more than 1 / paramenter then it's 0. Otherwise it's 1 minus distance times
@@ -152,8 +152,8 @@ long_term_boosting <-
 # actually 1 for every virus. If the parameter is large (infinite) then the
 # boosting is 0 for every virus
 
-param_titre_contribution_short <- 2.7 # NOTE(sen) mu_short
 param_titre_contribution_long <- 1.8 # NOTE(sen) mu
+param_titre_contribution_short <- 2.7 # NOTE(sen) mu_short
 
 # NOTE(sen) Each column represents the titre contributions for that strain from
 # all the other strains (including itself) if the individual was infected with
@@ -166,6 +166,30 @@ sampling_quarters <- strain_quarters_desired[strain_quarters_desired %% 2 == 0]
 
 parameter_wane_per_quarter <- 0.2 # NOTE(sen) wane
 parameter_seniority <- 0.05 # NOTE(sen) tau
+
+Rcpp::sourceCpp("sim/simtitre.cpp")
+
+simulate_individual_titre_cpp(
+  strain_quarters_desired,
+  titre_contribution_long["8000", ],
+  titre_contribution_short["8000", ],
+  infection_histories %>% filter(pid == 1) %>% pull(infected),
+  8001,
+  parameter_wane_per_quarter,
+  parameter_seniority
+)
+
+simulate_individual_titre_multiple_timepoints_cpp(
+  strain_quarters_desired,
+  titre_contribution_long["8000", ],
+  titre_contribution_short["8000", ],
+  infection_histories %>% filter(pid == 1) %>% pull(infected),
+  c(8000, 8001),
+  parameter_wane_per_quarter,
+  parameter_seniority
+)
+
+titre_contribution_long["8000", "8000"]
 
 sim_titres <- map_dfr(sampling_quarters, function(sampling_quarter) {
   infection_histories_before_sampling <- infection_histories %>%
