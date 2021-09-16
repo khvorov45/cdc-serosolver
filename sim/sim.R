@@ -167,195 +167,60 @@ sampling_quarters <- strain_quarters_desired[strain_quarters_desired %% 2 == 0]
 parameter_wane_per_quarter <- 0.2 # NOTE(sen) wane
 parameter_seniority <- 0.05 # NOTE(sen) tau
 
-Rcpp::sourceCpp("sim/simtitre.cpp")
+clamp01 <- function(x) {
+  pmax(pmin(x, 1), 0)
+}
 
-simulate_individual_titre_cpp(
-  strain_quarters_desired,
-  titre_contribution_long["8000", ],
-  titre_contribution_short["8000", ],
-  infection_histories %>% filter(pid == 1) %>% pull(infected),
-  8001,
-  parameter_wane_per_quarter,
-  parameter_seniority
-)
-
-simulate_individual_titre_multiple_timepoints_cpp(
-  strain_quarters_desired,
-  titre_contribution_long["8000", ],
-  titre_contribution_short["8000", ],
-  infection_histories %>% filter(pid == 1) %>% pull(infected),
-  c(8000, 8001),
-  parameter_wane_per_quarter,
-  parameter_seniority
-)
-
-titre_contribution_long["8000", "8000"]
-
-sim_titres <- map_dfr(sampling_quarters, function(sampling_quarter) {
-  infection_histories_before_sampling <- infection_histories %>%
-    mutate(infected = if_else(strain_quarter <= sampling_quarter, infected, 0L))
-  infection_histories_before_sampling %>%
-    group_by(pid) %>%
-    group_map(function(data, key) {
-      strain_quarters <- data$strain_quarter
-      infected <- data$infected
-
-      infected_matrix <- as.matrix(infected)
-      rownames(infected_matrix) <- strain_quarters
-
-      horizontal_matrix_with_ones <-
-        matrix(rep(1, length(strain_quarters)), nrow = 1)
-      colnames(horizontal_matrix_with_ones) <- strain_quarters
-
-      # NOTE(sen) Remove the contribution of the strains that the individual
-      # wasn't infected by
-      titre_contribution_mask <- infected_matrix %*% horizontal_matrix_with_ones
-
-      titre_contribution_long_masked <-
-        titre_contribution_long * titre_contribution_mask
-      titre_contribution_short_masked <-
-        titre_contribution_short * titre_contribution_mask
-
-      sampling_quarters_from_strain <-
-        sampling_quarter - matrix(strain_quarters) %*% horizontal_matrix_with_ones
-
-      wane_amount <-
-        pmin(pmax(1 - sampling_quarters_from_strain * parameter_wane_per_quarter, 0), 1)
-
-      titre_contribution_short_with_waning <-
-        titre_contribution_short_masked * wane_amount
-
-      titre_contribution_total_masked <-
-        titre_contribution_long_masked + titre_contribution_short_masked
-
-      seniority <- max(1 - parameter_seniority * (sum(infected) - 1), 0)
-
-      titre_contribution_total_per_strain <-
-        colSums(titre_contribution_total_masked) * seniority
-
-      tibble(
-        pid = key$pid,
-        sampling_quarter,
-        strain_quarter = names(titre_contribution_total_per_strain),
-        titre_unit = titre_contribution_total_per_strain
-      )
-    })
-})
-
-
-sim_titres
-
-
-infection_histories %>%
-  filter(pid == 34)
-
-sim_titres %>%
-  filter(pid == 34, sampling_quarter == 8000)
-
-matrix(-5:4, ncol = 2) %>% pmax(0)
-
-sim_titres
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-temp_one_infection_history <- infection_histories %>%
-  filter(pid == first(pid))
-
-temp_one_infection_history_matrix <- temp_one_infection_history %>%
-  pull(infected) %>%
-  as.matrix()
-
-rownames(temp_one_infection_history_matrix) <-
-  temp_one_infection_history$strain_quarter
-
-temp_one_infection_history_matrix %*%
-  matrix(rep(1, nrow(temp_one_infection_history_matrix)), nrow = 1)
-
-param_mu <- 1.8
-param_mu_short <- 2.7
-short_term_boosting %>%
-  as.matrix() %>%
-  `*`(param_mu_short) %>%
-  colSums()
-
-
-param_mu
-
-
-
-
-
-c(temp)
-str(antigenic_distances)
-
-c(antigenic_distances)
-c(temp)
-antigenic_distances[lower.tri(antigenic_distances, diag = TRUE)]
-
-data(example_par_tab, package = "serosolver")
-
-
-
-
-# NOTE(sen) strain isolation times are indices of Q1 of virus years, assume that
-# these sampled viruses were sampled in Q2 of each year.
-sampled_viruses <- 1999 * 4
-# seq(min(strain_isolation_times) + 1, max(strain_isolation_times), by = 4)
-
-serum_samples_per_year <- 2
-resolution_quarterly <- 4 # NOTE(sen) 4 per year, i.e. quarterly resolution_quarterly
-
-# NOTE(sen) One year's worth of sampling times
-sampling_times <- strain_isolation_times[c(1, 3)] # seq(2014 * resolution_quarterly, 2015 * resolution_quarterly - 1, by = 1)
-
-
-length(attack_rates)
-length(strain_isolation_times)
-serosolver::check_attack_rates(attack_rates, strain_isolation_times)
-
-all_simulated_data <- serosolver::simulate_data(
-  par_tab = example_par_tab,
-  n_indiv = 30,
-  buckets = resolution_quarterly,
-  strain_isolation_times = strain_isolation_times,
-  measured_strains = sampled_viruses,
-  sampling_times = sampling_times,
-  nsamps = serum_samples_per_year,
-  antigenic_map = example_antigenic_map,
-  age_min = 20 * resolution_quarterly,
-  age_max = 65 * resolution_quarterly,
-  attack_rates = attack_rates,
-  repeats = 1
-)
-
-# NOTE(sen) Unique values from each column
-iwalk(
-  all_simulated_data$data,
-  function(vec, name) {
-    cat(glue::glue("{name}: {paste(unique(vec), collapse = ' ')}\n\n"))
-  }
-)
-
-sim_data <- all_simulated_data$data %>%
-  inner_join(all_simulated_data$ages, "individual") %>%
-  as_tibble() %>%
+sim_titres <- tibble(
+  pid = unique(infection_histories$pid) %>% rep(each = length(sampling_quarters)),
+  sampling_quarter = rep(sampling_quarters, length(unique(pid))),
+) %>%
+  slice(rep(1:n(), each = length(strain_quarters_desired))) %>%
   mutate(
-    sample_year = samples / 4,
-    virus_year = (virus - 1) / 4,
-    titre_rescaled = 5 * 2^(titre), # NOTE(sen) I guess
-    year_of_birth = DOB / 4
+    measured_strain_quarter = rep(strain_quarters_desired, length.out = n()),
+  ) %>%
+  inner_join(infection_histories, c("pid", "measured_strain_quarter" = "strain_quarter")) %>%
+  mutate(infected_at_sampling_time = if_else(measured_strain_quarter <= sampling_quarter, infected, 0L)) %>%
+  group_by(pid, sampling_quarter) %>%
+  mutate(
+    quarters_from_infection_to_measurement =
+      sampling_quarter - measured_strain_quarter,
+    wane =
+      clamp01(1 - parameter_wane_per_quarter * quarters_from_infection_to_measurement),
+    # NOTE(sen) titre_contribution matrices need to correspond to
+    # measured_strain_quarter in terms of where each strain is positioned
+    max_titre_contribution_long = map_dbl(
+      measured_strain_quarter,
+      ~ sum(titre_contribution_long[as.character(.x), ] * infected_at_sampling_time)
+    ),
+    max_titre_contribution_short = map_dbl(
+      measured_strain_quarter,
+      ~ sum(titre_contribution_short[as.character(.x), ] * infected_at_sampling_time * wane)
+    ),
+    titre_index =
+      (max_titre_contribution_long + max_titre_contribution_short) *
+        clamp01(1 - parameter_seniority * sum(infected_at_sampling_time))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    titre = 5 * 2^titre_index
   )
 
-write_csv(sim_data, "sim/sim-data.csv")
+titre_plot <- sim_titres %>%
+  ggplot(aes(sampling_quarter, titre)) +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_x_continuous(
+    "Sample time",
+    # breaks = seq(2014, 2014.75, 0.25),
+    # labels = glue::glue("2014 Q{1:4}")
+  ) +
+  scale_y_log10("Titre", breaks = 5 * 2^(0:15)) +
+  facet_wrap(~measured_strain_quarter) +
+  geom_point(alpha = 0.5) +
+  geom_line(aes(group = pid), alpha = 0.5)
+
+ggsave("sim/titres.pdf", titre_plot, width = 20, height = 20, units = "cm")
